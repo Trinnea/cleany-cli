@@ -1,0 +1,45 @@
+{
+  "name": "cleany-cli",
+  "version": "0.1.0",
+  "description": "A macOS-first CLI to clean unnecessary developer storage.",
+  "type": "module",
+  "bin": {
+    "cleany": "bin/cleany.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --import tsx src/cli.ts",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "cli",
+    "macos",
+    "cleanup",
+    "node_modules",
+    "cache",
+    "ink"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^14.0.1",
+    "fast-glob": "^3.3.3",
+    "ink": "^5.2.1",
+    "react": "^18.3.1",
+    "trash": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "@types/react": "^18.3.12",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
