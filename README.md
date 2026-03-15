@@ -52,7 +52,15 @@ It is built for people who bounce between multiple local projects and want a fas
 
 ## Install
 
-Cleany is not documented here as a published npm package yet, so the current workflow is to run it from source.
+Cleany is published through GitHub Packages as the scoped package `@trinnea/cleany-cli`.
+
+You can install the package globally using:
+
+```bash
+npm install --global @trinnea/cleany-cli
+```
+
+If you want to work from source instead:
 
 ```bash
 npm install
@@ -149,6 +157,16 @@ npm run build
 npm test
 npm run dev
 ```
+
+## Publishing
+
+This repository is configured to publish to GitHub Packages.
+
+```bash
+npm publish
+```
+
+The package metadata already points to `https://npm.pkg.github.com`, and the project `.npmrc` maps the `@trinnea` scope to GitHub Packages.
 
 ## Open Source
 

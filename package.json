@@ -1,8 +1,9 @@
 {
-  "name": "cleany-cli",
+  "name": "@trinnea/cleany-cli",
   "version": "0.1.0",
   "description": "A macOS-first CLI to clean unnecessary developer storage.",
   "type": "module",
+  "repository": "https://github.com/trinnea/cleany-cli.git",
   "bin": {
     "cleany": "bin/cleany.js"
   },
@@ -28,6 +29,9 @@
     "ink"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "dependencies": {
     "commander": "^14.0.1",
     "fast-glob": "^3.3.3",
