@@ -147,6 +147,19 @@ npm run dev -- scan --path ~/Code/my-app
 - Headless text output: used in non-interactive runs
 - JSON output: use `--json` for scripts, automation, or machine-readable results
 
+### TUI Shortcuts
+
+- `1` to `5`: jump directly between scope, preset, categories, targets, and actions
+- `Tab`: move to the next panel
+- `j` / `k` or arrow keys: move within the active panel
+- `Space`: toggle a category or target
+- `Enter`: run the highlighted action
+- `s`: scan or rescan from anywhere
+- `x`: open cleanup confirmation or run the confirmed cleanup
+- `b`: leave the confirmation screen without deleting anything
+- `q`: quit
+- `n` / `p`: move between target pages
+
 In headless cleanup mode, Cleany refuses to delete anything unless `--yes` is provided.
 
 ## Development
