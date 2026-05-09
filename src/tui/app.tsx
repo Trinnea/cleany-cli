@@ -29,19 +29,11 @@ import {compactPath, compactPathMiddle, formatBytes, formatDuration, formatMetho
 
 const PRESETS = getAllPresets();
 const SCOPE_OPTIONS: Array<{id: Scope; label: string; description: string}> = [
-  {
-    id: 'local',
-    label: 'Local project',
-    description: 'Scan only the current project path or the directory passed with --path.'
-  },
-  {
-    id: 'global',
-    label: 'Global developer roots',
-    description: 'Scan common workspace folders plus supported cache locations.'
-  }
+  {id: 'local', label: 'Local project', description: 'Current directory or --path only'},
+  {id: 'global', label: 'Global roots', description: 'Common workspaces and supported caches'}
 ];
-const FOCUS_ORDER: FocusSection[] = ['scope', 'preset', 'categories', 'targets', 'actions'];
-const FOCUS_SHORTCUTS: Record<string, FocusSection> = {
+const SECTION_ORDER: SectionId[] = ['scope', 'preset', 'categories', 'targets', 'actions'];
+const SECTION_SHORTCUTS: Record<string, SectionId> = {
   '1': 'scope',
   '2': 'preset',
   '3': 'categories',
@@ -49,27 +41,9 @@ const FOCUS_SHORTCUTS: Record<string, FocusSection> = {
   '5': 'actions'
 };
 
-type FocusSection = 'scope' | 'preset' | 'categories' | 'targets' | 'actions';
+type SectionId = 'scope' | 'preset' | 'categories' | 'targets' | 'actions';
 type ActionId = 'scan' | 'rescan' | 'clean' | 'back' | 'confirm-cleanup' | 'quit' | 'exit';
-type Tone = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'gray';
-type WorkflowStage = 'setup' | 'categories' | 'review' | 'cleanup';
-
-interface WorkflowStep {
-  stage: WorkflowStage;
-  step: string;
-  title: string;
-  summary: string;
-  current: boolean;
-  complete: boolean;
-}
-
-interface StatusModel {
-  label: string;
-  detail: string;
-  tone: Tone;
-  progressCurrent: number;
-  progressTotal: number;
-}
+type Tone = 'green' | 'yellow' | 'cyan' | 'gray' | 'white';
 
 interface ActionMeta {
   id: ActionId;
@@ -111,25 +85,23 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<'scan' | 'clean' | null>(null);
-  const [focusIndex, setFocusIndex] = useState(0);
-  const [scopeCursor, setScopeCursor] = useState(() => SCOPE_OPTIONS.findIndex((item) => item.id === (options.scope ?? getDefaultScope())));
+  const [section, setSection] = useState<SectionId>('scope');
+  const [scopeCursor, setScopeCursor] = useState(() => Math.max(0, SCOPE_OPTIONS.findIndex((item) => item.id === (options.scope ?? getDefaultScope()))));
   const [presetCursor, setPresetCursor] = useState(() =>
     Math.max(0, PRESETS.findIndex((item) => item.id === (options.mode ?? getDefaultPreset())))
   );
   const [categoryCursor, setCategoryCursor] = useState(0);
   const [targetCursor, setTargetCursor] = useState(0);
-  const [targetPage, setTargetPage] = useState(0);
-  const [actionIndex, setActionIndex] = useState(0);
+  const [actionCursor, setActionCursor] = useState(0);
   const basePath = options.path ?? runtime.cwd;
   const availableCategories = useMemo(() => getAvailableCategoriesForScope(scope), [scope]);
+  const terminal = useMemo(() => getTerminalModel(terminalWidth, terminalHeight), [terminalHeight, terminalWidth]);
 
   useEffect(() => {
     const filtered = enabledCategories.filter((category) => availableCategories.includes(category));
-    if (filtered.length === enabledCategories.length) {
-      return;
+    if (filtered.length !== enabledCategories.length) {
+      setEnabledCategories(filtered.length > 0 ? filtered : getEnabledCategoriesForPreset(preset, scope));
     }
-
-    setEnabledCategories(filtered.length > 0 ? filtered : getEnabledCategoriesForPreset(preset, scope));
   }, [availableCategories, enabledCategories, preset, scope]);
 
   const visibleTargets = useMemo(() => {
@@ -150,30 +122,11 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
     });
   }, [deselectedKeys, enabledCategories, options.noTrash, preset, scanResult]);
 
-  const focusSections = useMemo<FocusSection[]>(() => {
-    const sections: FocusSection[] = ['scope', 'preset', 'categories'];
-    if (scanResult) {
-      sections.push('targets');
-    }
-    sections.push('actions');
-    return sections;
-  }, [scanResult]);
-
   const actions = useMemo<ActionMeta[]>(() => {
     if (executionResult) {
       return [
-        {
-          id: 'rescan',
-          label: 'Rescan',
-          hotkey: 's',
-          description: 'Run a fresh scan with the current scope, preset, and categories.'
-        },
-        {
-          id: 'exit',
-          label: 'Exit',
-          hotkey: 'q',
-          description: 'Close Cleany.'
-        }
+        {id: 'rescan', label: 'Rescan', hotkey: 's', description: 'Run a fresh scan.'},
+        {id: 'exit', label: 'Exit', hotkey: 'q', description: 'Close Cleany.'}
       ];
     }
 
@@ -187,107 +140,63 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
           id: 'confirm-cleanup',
           label: options.dryRun ? 'Run Preview' : 'Confirm Cleanup',
           hotkey: 'x',
-          description: options.dryRun
-            ? 'Generate a dry-run report for the current selection.'
-            : `Delete ${cleanupPlan?.selected.length ?? 0} selected targets.`,
+          description: options.dryRun ? 'Preview selected deletions.' : `Delete ${cleanupPlan?.selected.length ?? 0} selected targets.`,
           disabled: !cleanupPlan || cleanupPlan.selected.length === 0
         },
-        {
-          id: 'back',
-          label: 'Back',
-          hotkey: 'b',
-          description: 'Return to the review screen without deleting anything.'
-        },
-        {
-          id: 'quit',
-          label: 'Quit',
-          hotkey: 'q',
-          description: 'Close Cleany.'
-        }
+        {id: 'back', label: 'Back', hotkey: 'b', description: 'Return to review.'},
+        {id: 'quit', label: 'Quit', hotkey: 'q', description: 'Close Cleany.'}
       ];
     }
 
     if (!scanResult) {
       return [
-        {
-          id: 'scan',
-          label: 'Scan',
-          hotkey: 's',
-          description: 'Search the selected scope for reclaimable developer files.'
-        },
-        {
-          id: 'quit',
-          label: 'Quit',
-          hotkey: 'q',
-          description: 'Close Cleany.'
-        }
+        {id: 'scan', label: 'Scan', hotkey: 's', description: 'Find reclaimable developer files.'},
+        {id: 'quit', label: 'Quit', hotkey: 'q', description: 'Close Cleany.'}
       ];
     }
 
     return [
-      {
-        id: 'rescan',
-        label: 'Rescan',
-        hotkey: 's',
-        description: 'Run the scan again using the current configuration.'
-      },
+      {id: 'rescan', label: 'Rescan', hotkey: 's', description: 'Scan again with the current choices.'},
       {
         id: 'clean',
         label: options.dryRun ? 'Preview Cleanup' : 'Clean Selected',
         hotkey: 'x',
-        description: options.dryRun
-          ? 'Preview the current selection without deleting anything.'
-          : 'Open the cleanup confirmation step.',
+        description: options.dryRun ? 'Preview without deleting.' : 'Open final confirmation.',
         disabled: !cleanupPlan || cleanupPlan.selected.length === 0
       },
-      {
-        id: 'quit',
-        label: 'Quit',
-        hotkey: 'q',
-        description: 'Close Cleany.'
-      }
+      {id: 'quit', label: 'Quit', hotkey: 'q', description: 'Close Cleany.'}
     ];
   }, [busy, cleanupPlan, confirming, executionResult, options.dryRun, scanResult]);
 
-  const activeFocus = focusSections[Math.min(focusIndex, focusSections.length - 1)] ?? 'scope';
-  const pageSize = Math.max(4, Math.min(10, terminalHeight - 22));
-  const totalTargetPages = Math.max(1, Math.ceil(visibleTargets.length / pageSize));
-  const pagedTargets = visibleTargets.slice(targetPage * pageSize, targetPage * pageSize + pageSize);
-  const focusedCategory = availableCategories[categoryCursor];
-  const focusedTarget = pagedTargets[targetCursor];
-  const highlightedAction = actions[actionIndex];
-  const selectionCount = cleanupPlan?.selected.length ?? 0;
-  const scanWarnings = scanResult?.warnings ?? [];
-  const prominentWarnings = cleanupPlan?.warnings ?? [];
-  const focusHelp = getFocusHelp({
-    activeFocus,
-    page: targetPage + 1,
-    totalPages: totalTargetPages,
-    selectionCount,
-    targetCount: visibleTargets.length
-  });
-  const activeStage = getWorkflowStage(activeFocus);
-  const workflowSteps = getWorkflowSteps({
-    activeStage,
-    scope,
-    preset,
-    enabledCategoryCount: enabledCategories.length,
-    availableCategoryCount: availableCategories.length,
-    scanResult,
-    selectionCount,
-    visibleTargetCount: visibleTargets.length,
-    confirming,
-    executionResult
-  });
-  const statusModel = getStatusModel({
+  const availableSections = useMemo<SectionId[]>(() => {
+    return scanResult ? SECTION_ORDER : ['scope', 'preset', 'categories', 'actions'];
+  }, [scanResult]);
+
+  const activeSection = availableSections.includes(section) ? section : 'actions';
+  const selectedCount = cleanupPlan?.selected.length ?? 0;
+  const reclaimableBytes = cleanupPlan?.totalBytes ?? 0;
+  const status = getStatus({
+    busy,
     scanProgress,
     cleanProgress,
-    busy,
     confirming,
     executionResult,
-    scanResult,
-    cleanupPlan
+    scanResult
   });
+  const maxRows = Math.max(1, terminal.bodyRows);
+  const targetRows = Math.max(1, maxRows - 2);
+  const targetWindow = getWindow(visibleTargets.length, targetCursor, targetRows);
+  const targetPage = Math.floor(targetCursor / targetRows) + 1;
+  const totalTargetPages = Math.max(1, Math.ceil(visibleTargets.length / targetRows));
+  const focusedCategory = availableCategories[categoryCursor];
+  const focusedTarget = visibleTargets[targetCursor];
+  const focusedAction = actions[actionCursor];
+
+  useEffect(() => {
+    if (!availableSections.includes(section)) {
+      setSection('actions');
+    }
+  }, [availableSections, section]);
 
   useEffect(() => {
     setScopeCursor(Math.max(0, SCOPE_OPTIONS.findIndex((item) => item.id === scope)));
@@ -298,28 +207,25 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
   }, [preset]);
 
   useEffect(() => {
-    setTargetPage((current) => Math.min(current, totalTargetPages - 1));
-  }, [totalTargetPages]);
+    setCategoryCursor((current) => clamp(current, 0, Math.max(0, availableCategories.length - 1)));
+  }, [availableCategories.length]);
 
   useEffect(() => {
-    setTargetCursor((current) => Math.min(current, Math.max(0, pagedTargets.length - 1)));
-    setActionIndex((current) => Math.min(current, Math.max(0, actions.length - 1)));
-    setCategoryCursor((current) => Math.min(current, Math.max(0, availableCategories.length - 1)));
-  }, [actions.length, availableCategories.length, pagedTargets.length]);
+    setTargetCursor((current) => clamp(current, 0, Math.max(0, visibleTargets.length - 1)));
+  }, [visibleTargets.length]);
+
+  useEffect(() => {
+    setActionCursor((current) => clamp(current, 0, Math.max(0, actions.length - 1)));
+  }, [actions.length]);
 
   useInput((input, key) => {
     if (busy) {
       return;
     }
 
-    if (key.tab) {
-      setFocusIndex((current) => (current + 1) % focusSections.length);
-      return;
-    }
-
-    const shortcutSection = FOCUS_SHORTCUTS[input];
-    if (shortcutSection && focusSections.includes(shortcutSection)) {
-      setFocusIndex(focusSections.indexOf(shortcutSection));
+    if (key.escape && confirming) {
+      setConfirming(false);
+      setSection(scanResult ? 'targets' : 'actions');
       return;
     }
 
@@ -329,83 +235,123 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
       return;
     }
 
-    if (key.escape && confirming) {
-      setConfirming(false);
-      setFocusIndex(FOCUS_ORDER.indexOf('targets'));
+    const shortcutSection = SECTION_SHORTCUTS[input];
+    if (shortcutSection) {
+      setSection(resolveSection(shortcutSection, availableSections));
       return;
     }
 
-    if ((input === 'p' || input === 'h' || key.leftArrow || key.pageUp) && activeFocus === 'targets' && targetPage > 0) {
-      setTargetPage((current) => current - 1);
-      setTargetCursor(0);
+    if (key.tab) {
+      setSection(nextSection(activeSection, availableSections, 1));
       return;
     }
 
-    if ((input === 'n' || input === 'l' || key.rightArrow || key.pageDown) && activeFocus === 'targets' && targetPage < totalTargetPages - 1) {
-      setTargetPage((current) => current + 1);
-      setTargetCursor(0);
+    if (key.leftArrow && activeSection !== 'targets') {
+      setSection(nextSection(activeSection, availableSections, -1));
       return;
     }
 
-    switch (activeFocus) {
+    if (key.rightArrow && activeSection !== 'targets') {
+      setSection(nextSection(activeSection, availableSections, 1));
+      return;
+    }
+
+    switch (activeSection) {
       case 'scope':
-        handleScopeInput(input, key, scopeCursor, setScopeCursor, setScopeWithReset);
-        break;
+        handleScopeInput(input, key);
+        return;
       case 'preset':
-        handlePresetInput(input, key, presetCursor, setPresetCursor, setPresetSelection);
-        break;
+        handlePresetInput(input, key);
+        return;
       case 'categories':
-        handleCategoriesInput(input, key);
-        break;
+        handleCategoryInput(input, key);
+        return;
       case 'targets':
-        handleTargetsInput(input, key);
-        break;
+        handleTargetInput(input, key, targetRows);
+        return;
       case 'actions':
-        handleActionsInput(input, key);
-        break;
+        handleActionInput(input, key);
+        return;
     }
   });
 
-  function setScopeWithReset(nextScope: Scope) {
+  function resetScanState() {
+    setScanResult(null);
+    setExecutionResult(null);
+    setConfirming(false);
+    setDeselectedKeys([]);
+    setTargetCursor(0);
+    if (section === 'targets') {
+      setSection('actions');
+    }
+  }
+
+  function setScopeSelection(nextScope: Scope) {
     if (nextScope === scope) {
       return;
     }
 
     setScope(nextScope);
     setEnabledCategories(getEnabledCategoriesForPreset(preset, nextScope));
-    setScanResult(null);
-    setExecutionResult(null);
-    setConfirming(false);
-    setDeselectedKeys([]);
-    setTargetCursor(0);
-    setTargetPage(0);
+    resetScanState();
   }
 
-  function setPresetSelection(nextIndex: number) {
-    const nextPreset = PRESETS[nextIndex]?.id ?? preset;
-
+  function setPresetSelection(nextPreset: Preset) {
     if (nextPreset === preset) {
       return;
     }
 
     setPreset(nextPreset);
     setEnabledCategories(getEnabledCategoriesForPreset(nextPreset, scope));
-    setScanResult(null);
-    setExecutionResult(null);
-    setDeselectedKeys([]);
-    setConfirming(false);
-    setTargetCursor(0);
-    setTargetPage(0);
+    resetScanState();
   }
 
-  function handleCategoriesInput(input: string, key: InputKey) {
+  function handleScopeInput(input: string, key: InputKey) {
     if (key.downArrow || input === 'j') {
-      setCategoryCursor((current) => Math.min(current + 1, availableCategories.length - 1));
+      setScopeCursor((current) => clamp(current + 1, 0, SCOPE_OPTIONS.length - 1));
       return;
     }
 
     if (key.upArrow || input === 'k') {
-      setCategoryCursor((current) => Math.max(current - 1, 0));
+      setScopeCursor((current) => clamp(current - 1, 0, SCOPE_OPTIONS.length - 1));
+      return;
+    }
+
+    if (input === ' ' || key.return) {
+      const nextScope = SCOPE_OPTIONS[scopeCursor]?.id;
+      if (nextScope) {
+        setScopeSelection(nextScope);
+      }
+    }
+  }
+
+  function handlePresetInput(input: string, key: InputKey) {
+    if (key.downArrow || input === 'j') {
+      setPresetCursor((current) => clamp(current + 1, 0, PRESETS.length - 1));
+      return;
+    }
+
+    if (key.upArrow || input === 'k') {
+      setPresetCursor((current) => clamp(current - 1, 0, PRESETS.length - 1));
+      return;
+    }
+
+    if (input === ' ' || key.return) {
+      const nextPreset = PRESETS[presetCursor]?.id;
+      if (nextPreset) {
+        setPresetSelection(nextPreset);
+      }
+    }
+  }
+
+  function handleCategoryInput(input: string, key: InputKey) {
+    if (key.downArrow || input === 'j') {
+      setCategoryCursor((current) => clamp(current + 1, 0, availableCategories.length - 1));
+      return;
+    }
+
+    if (key.upArrow || input === 'k') {
+      setCategoryCursor((current) => clamp(current - 1, 0, availableCategories.length - 1));
       return;
     }
 
@@ -416,42 +362,45 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
       }
 
       setEnabledCategories((current) => {
-        const exists = current.includes(category);
-        if (exists) {
+        if (current.includes(category)) {
           return current.filter((item) => item !== category);
         }
 
         return [...current, category];
       });
-      setScanResult(null);
-      setExecutionResult(null);
-      setDeselectedKeys([]);
-      setConfirming(false);
-      setTargetCursor(0);
-      setTargetPage(0);
+      resetScanState();
     }
   }
 
-  function handleTargetsInput(input: string, key: InputKey) {
+  function handleTargetInput(input: string, key: InputKey, pageSize: number) {
     if (key.downArrow || input === 'j') {
-      setTargetCursor((current) => Math.min(current + 1, Math.max(0, pagedTargets.length - 1)));
+      setTargetCursor((current) => clamp(current + 1, 0, visibleTargets.length - 1));
       return;
     }
 
     if (key.upArrow || input === 'k') {
-      setTargetCursor((current) => Math.max(current - 1, 0));
+      setTargetCursor((current) => clamp(current - 1, 0, visibleTargets.length - 1));
+      return;
+    }
+
+    if (key.pageDown || key.rightArrow || input === 'n' || input === 'l') {
+      setTargetCursor((current) => clamp(current + pageSize, 0, visibleTargets.length - 1));
+      return;
+    }
+
+    if (key.pageUp || key.leftArrow || input === 'p' || input === 'h') {
+      setTargetCursor((current) => clamp(current - pageSize, 0, visibleTargets.length - 1));
       return;
     }
 
     if (input === ' ' || key.return) {
-      const target = pagedTargets[targetCursor];
+      const target = visibleTargets[targetCursor];
       if (!target) {
         return;
       }
 
       setDeselectedKeys((current) => {
-        const exists = current.includes(target.key);
-        if (exists) {
+        if (current.includes(target.key)) {
           return current.filter((item) => item !== target.key);
         }
 
@@ -460,19 +409,19 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
     }
   }
 
-  function handleActionsInput(input: string, key: InputKey) {
-    if (key.downArrow || key.rightArrow || input === 'j' || input === 'l') {
-      setActionIndex((current) => Math.min(current + 1, Math.max(0, actions.length - 1)));
+  function handleActionInput(input: string, key: InputKey) {
+    if (key.downArrow || input === 'j') {
+      setActionCursor((current) => clamp(current + 1, 0, actions.length - 1));
       return;
     }
 
-    if (key.upArrow || key.leftArrow || input === 'k' || input === 'h') {
-      setActionIndex((current) => Math.max(current - 1, 0));
+    if (key.upArrow || input === 'k') {
+      setActionCursor((current) => clamp(current - 1, 0, actions.length - 1));
       return;
     }
 
-    if (key.return || input === ' ') {
-      void runAction(actions[actionIndex]?.id);
+    if (input === ' ' || key.return) {
+      void runAction(actions[actionCursor]?.id);
     }
   }
 
@@ -493,13 +442,13 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
       case 'clean':
         if (cleanupPlan && cleanupPlan.selected.length > 0) {
           setConfirming(true);
-          setActionIndex(0);
-          setFocusIndex(FOCUS_ORDER.indexOf('actions'));
+          setActionCursor(0);
+          setSection('actions');
         }
         return;
       case 'back':
         setConfirming(false);
-        setFocusIndex(FOCUS_ORDER.indexOf(scanResult ? 'targets' : 'categories'));
+        setSection(scanResult ? 'targets' : 'actions');
         return;
       case 'confirm-cleanup':
         await runCleanup();
@@ -513,7 +462,6 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
     setConfirming(false);
     setDeselectedKeys([]);
     setTargetCursor(0);
-    setTargetPage(0);
     try {
       const nextScanResult = await scanTargets({
         scope,
@@ -523,7 +471,7 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
         onProgress: setScanProgress
       });
       setScanResult(nextScanResult);
-      setFocusIndex(FOCUS_ORDER.indexOf('targets'));
+      setSection('targets');
     } finally {
       setBusy(null);
       setScanProgress(null);
@@ -544,7 +492,7 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
         onProgress: setCleanProgress
       });
       setExecutionResult(result);
-      setFocusIndex(FOCUS_ORDER.indexOf('actions'));
+      setSection('actions');
     } finally {
       setBusy(null);
       setCleanProgress(null);
@@ -552,609 +500,734 @@ export function CleanyApp({options, runtime}: CleanyAppProps) {
   }
 
   return (
-    <Box flexDirection="column" width={terminalWidth} height={terminalHeight} paddingX={1}>
-      <Hero basePath={basePath} activeStage={activeStage} workflowSteps={workflowSteps} />
-      <Box flexGrow={1} gap={1}>
-        <Box width="68%" flexDirection="column" gap={1}>
-          <WorkflowCard
-            step="01"
-            title="Setup"
-            hint="Choose where to scan and how aggressive the cleanup should be."
-            stateLabel={`${scope === 'local' ? 'Local' : 'Global'} · ${PRESET_META[preset].label}`}
-            active={activeStage === 'setup'}
-            tone="green"
-          >
-            <Text color="gray">[1] Scope · all available options are listed below</Text>
-            {SCOPE_OPTIONS.map((option, index) => (
-              <ChoiceRow
-                key={option.id}
-                label={option.label}
-                description={
-                  option.id === 'local'
-                    ? `${option.description} Current path ${compactPath(basePath, 36)}.`
-                    : option.description
-                }
-                selected={scope === option.id}
-                cursor={activeFocus === 'scope' && index === scopeCursor}
-              />
-            ))}
-            <Text color="gray">[2] Preset · all available modes are listed below</Text>
-            {PRESETS.map((item, index) => (
-              <ChoiceRow
-                key={item.id}
-                label={PRESET_META[item.id].label}
-                description={PRESET_META[item.id].description}
-                selected={preset === item.id}
-                cursor={activeFocus === 'preset' && index === presetCursor}
-              />
-            ))}
-          </WorkflowCard>
-          <WorkflowCard
-            step="02"
-            title="Fine-tune categories"
-            hint="Enable only the artifact groups you want Cleany to touch."
-            stateLabel={`${enabledCategories.length}/${availableCategories.length} enabled`}
-            active={activeStage === 'categories'}
-            tone="yellow"
-          >
-            {availableCategories.map((category, index) => {
-              const total = cleanupPlan?.categoryTotals[category] ?? 0;
-              return (
-                <SelectableRow
-                  key={category}
-                  label={CATEGORY_META[category].label}
-                  selected={enabledCategories.includes(category)}
-                  cursor={activeFocus === 'categories' && index === categoryCursor}
-                  detail={scanResult ? formatBytes(total) : undefined}
-                />
-              );
-            })}
-            <Text color="gray">
-              {focusedCategory ? compactPath(CATEGORY_META[focusedCategory].description, 70) : 'Choose what Cleany is allowed to touch.'}
-            </Text>
-          </WorkflowCard>
-          <WorkflowCard
-            step="03"
-            title="Review scan results"
-            hint={scanResult ? 'Inspect what will be removed. Toggle any item you want to keep.' : 'Run a scan after setup to populate review items.'}
-            stateLabel={
-              scanResult
-                ? `${selectionCount}/${visibleTargets.length} selected${visibleTargets.length > pageSize ? ` · page ${targetPage + 1}/${totalTargetPages}` : ''}`
-                : 'Waiting for scan'
-            }
-            active={activeStage === 'review'}
-            tone="magenta"
-          >
-            {pagedTargets.length === 0 ? (
-              <Text color="gray">Press `s` to scan using the current setup and category selection.</Text>
-            ) : (
-              pagedTargets.map((target, index) => {
-                const isSelected = !deselectedKeys.includes(target.key);
-                return (
-                  <SelectableRow
-                    key={target.key}
-                    label={formatTargetLabel(target, scope, basePath, runtime.homeDir)}
-                    selected={isSelected}
-                    cursor={activeFocus === 'targets' && index === targetCursor}
-                    detail={`${formatBytes(target.size)} ${formatMethod(options.noTrash ? 'permanent' : target.deletionMethod)}`}
-                  />
-                );
-              })
-            )}
-            {focusedTarget ? (
-              <Text color="gray">{compactPath(focusedTarget.warning, 72)}</Text>
-            ) : (
-              <Text color="gray">{focusHelp}</Text>
-            )}
-          </WorkflowCard>
-          <WorkflowCard
-            step="04"
-            title={confirming ? 'Confirm cleanup' : executionResult ? 'Cleanup complete' : 'Run cleanup'}
-            hint={
-              confirming
-                ? 'One more explicit step before anything is deleted.'
-                : executionResult
-                  ? 'Rescan if you want to check the next batch.'
-                  : 'Start with a scan, then continue when the selection looks right.'
-            }
-            stateLabel={
-              executionResult
-                ? `Reclaimed ${formatBytes(executionResult.bytesReclaimed)}`
-                : confirming
-                  ? `${selectionCount} selected`
-                  : highlightedAction?.label ?? 'Ready'
-            }
-            active={activeStage === 'cleanup'}
-            tone="blue"
-          >
-            {actions.map((action, index) => (
-              <ActionRow
-                key={action.id}
-                action={action}
-                active={activeFocus === 'actions' && index === actionIndex}
-              />
-            ))}
-            <Text color="gray">
-              {executionResult
-                ? `Removed ${executionResult.deleted.length} targets in the last run.`
-                : highlightedAction
-                  ? compactPath(highlightedAction.description, 72)
-                  : 'Choose an action to continue.'}
-            </Text>
-          </WorkflowCard>
-        </Box>
-        <Box width="32%" flexDirection="column" gap={1}>
-          <SideCard title="Status" subtitle={statusModel.label} tone={statusModel.tone}>
-            <Text>{compactPath(statusModel.detail, 36)}</Text>
-            <Text color={busy ? 'cyan' : 'gray'}>
-              {renderBar(statusModel.progressCurrent, statusModel.progressTotal || 1, 18)}{' '}
-              {statusModel.progressTotal > 0 ? `${statusModel.progressCurrent}/${statusModel.progressTotal}` : 'idle'}
-            </Text>
-          </SideCard>
-          <SideCard title="Snapshot" subtitle="Current selection" tone="cyan">
-            <MetricRow label="Scope" value={scope === 'local' ? 'Local' : 'Global'} />
-            <MetricRow label="Preset" value={PRESET_META[preset].label} />
-            <MetricRow label="Selected" value={String(selectionCount)} />
-            <MetricRow label="Reclaimable" value={formatBytes(cleanupPlan?.totalBytes ?? 0)} />
-            <MetricRow label="Trash" value={formatBytes(cleanupPlan?.byMethod.trash ?? 0)} />
-            <MetricRow label="Permanent" value={formatBytes(cleanupPlan?.byMethod.permanent ?? 0)} />
-          </SideCard>
-          <SideCard title="Workflow" subtitle="Guided path" tone="magenta">
-            {workflowSteps.map((step) => (
-              <TimelineRow key={step.stage} step={step} />
-            ))}
-          </SideCard>
-          <SideCard title="Keys" subtitle="Fast path" tone="gray">
-            <Text color="gray">[1-5] Jump [Tab] Next [j/k] Move</Text>
-            <Text color="gray">[Space] Toggle [Enter] Apply / Select</Text>
-            <Text color="gray">[s] Scan [x] Clean [b] Back [q] Quit</Text>
-            {scanResult ? <Text color="gray">[n/p] Pages</Text> : null}
-          </SideCard>
-          <SideCard title="Warnings" subtitle={confirming ? 'Review carefully' : 'Before cleanup'} tone="red">
-            {renderWarningRows(confirming ? buildConfirmWarnings(cleanupPlan) : prominentWarnings, 3)}
-            {scanWarnings.length > 0 ? (
-              <Text color="yellow">+ {scanWarnings.length} scan warnings recorded</Text>
-            ) : (
-              <Text color="gray">No active warnings.</Text>
-            )}
-          </SideCard>
-        </Box>
+    <Box flexDirection="column" width={terminal.width} minHeight={terminal.height} paddingX={terminal.paddingX}>
+      <Header
+        basePath={basePath}
+        compact={terminal.compact}
+        status={status}
+        width={terminal.contentWidth}
+      />
+      <SummaryBar
+        compact={terminal.compact}
+        scope={scope}
+        preset={preset}
+        categoryCount={enabledCategories.length}
+        availableCategoryCount={availableCategories.length}
+        selectedCount={selectedCount}
+        visibleTargetCount={visibleTargets.length}
+        reclaimableBytes={reclaimableBytes}
+        durationMs={scanResult?.durationMs}
+        width={terminal.contentWidth}
+      />
+      <SectionTabs active={activeSection} availableSections={availableSections} compact={terminal.compact} />
+
+      <Box flexDirection="column" flexGrow={1} borderStyle={terminal.compact ? undefined : 'round'} borderColor="cyan" paddingX={terminal.compact ? 0 : 1}>
+        <SectionHeader activeSection={activeSection} hint={getSectionHint(activeSection, scanResult, targetPage, totalTargetPages)} />
+        {activeSection === 'scope' ? (
+          <ScopeView
+            scope={scope}
+            cursor={scopeCursor}
+            basePath={basePath}
+            maxRows={maxRows}
+            width={terminal.contentWidth}
+          />
+        ) : null}
+        {activeSection === 'preset' ? <PresetView preset={preset} cursor={presetCursor} maxRows={maxRows} width={terminal.contentWidth} /> : null}
+        {activeSection === 'categories' ? (
+          <CategoryView
+            availableCategories={availableCategories}
+            enabledCategories={enabledCategories}
+            cleanupPlan={cleanupPlan}
+            cursor={categoryCursor}
+            maxRows={maxRows}
+            focusedCategory={focusedCategory}
+            width={terminal.contentWidth}
+          />
+        ) : null}
+        {activeSection === 'targets' ? (
+          <TargetView
+            targets={visibleTargets}
+            window={targetWindow}
+            cursor={targetCursor}
+            deselectedKeys={deselectedKeys}
+            scope={scope}
+            basePath={basePath}
+            homeDir={runtime.homeDir}
+            noTrash={Boolean(options.noTrash)}
+            focusedTarget={focusedTarget}
+            width={terminal.contentWidth}
+          />
+        ) : null}
+        {activeSection === 'actions' ? (
+          <ActionView
+            actions={actions}
+            cursor={actionCursor}
+            confirming={confirming}
+            cleanupPlan={cleanupPlan}
+            dryRun={Boolean(options.dryRun)}
+            cleanProgress={cleanProgress}
+            executionResult={executionResult}
+            warnings={scanResult?.warnings ?? []}
+            maxRows={maxRows}
+            width={terminal.contentWidth}
+          />
+        ) : null}
       </Box>
+
+      <Footer
+        compact={terminal.compact}
+        activeSection={activeSection}
+        canPageTargets={visibleTargets.length > targetRows}
+        confirming={confirming}
+      />
     </Box>
   );
 }
 
-function handleScopeInput(
-  input: string,
-  key: InputKey,
-  currentCursor: number,
-  setCursor: React.Dispatch<React.SetStateAction<number>>,
-  onSelect: (scope: Scope) => void
-) {
-  if (key.downArrow || key.rightArrow || input === 'j' || input === 'l') {
-    setCursor((current) => Math.min(current + 1, SCOPE_OPTIONS.length - 1));
-    return;
-  }
-
-  if (key.upArrow || key.leftArrow || input === 'k' || input === 'h') {
-    setCursor((current) => Math.max(current - 1, 0));
-    return;
-  }
-
-  if (key.return || input === ' ') {
-    const nextScope = SCOPE_OPTIONS[currentCursor]?.id;
-    if (nextScope) {
-      onSelect(nextScope);
-    }
-  }
-}
-
-function handlePresetInput(
-  input: string,
-  key: InputKey,
-  currentIndex: number,
-  setCursor: React.Dispatch<React.SetStateAction<number>>,
-  onSelect: (index: number) => void
-) {
-  if (key.downArrow || key.rightArrow || input === 'j' || input === 'l') {
-    setCursor((current) => Math.min(current + 1, PRESETS.length - 1));
-    return;
-  }
-
-  if (key.upArrow || key.leftArrow || input === 'k' || input === 'h') {
-    setCursor((current) => Math.max(current - 1, 0));
-    return;
-  }
-
-  if (key.return || input === ' ') {
-    onSelect(currentIndex);
-  }
-}
-
-function Hero({
+function Header({
   basePath,
-  activeStage,
-  workflowSteps
+  compact,
+  status,
+  width
 }: {
   basePath: string;
-  activeStage: WorkflowStage;
-  workflowSteps: WorkflowStep[];
+  compact: boolean;
+  status: {text: string; tone: Tone; progress?: {current: number; total: number}};
+  width: number;
 }) {
-  const currentStep = workflowSteps.find((step) => step.stage === activeStage);
-
-  return (
-    <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} paddingY={0} marginBottom={1}>
-      <Box justifyContent="space-between">
-        <Text color="magenta">Cleany</Text>
-        <Text color="gray">{currentStep ? `Step ${currentStep.step} of ${workflowSteps.length}` : ''}</Text>
+  if (compact) {
+    return (
+      <Box flexDirection="column">
+        <Text>
+          <Text color="cyan">Cleany</Text> <Text color={status.tone}>{truncate(status.text, width - 8)}</Text>
+        </Text>
+        {status.progress ? <ProgressLine current={status.progress.current} total={status.progress.total} width={width} /> : null}
       </Box>
-      <Text>{compactPath(basePath, 88)}</Text>
-      <Text color="gray">Configure, scan, review, and clean without hidden navigation.</Text>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={status.tone} paddingX={1} marginBottom={1}>
+      <Box justifyContent="space-between">
+        <Text color="cyan">Cleany</Text>
+        <Text color={status.tone}>{truncate(status.text, Math.max(12, width - 12))}</Text>
+      </Box>
+      {status.progress ? (
+        <ProgressLine current={status.progress.current} total={status.progress.total} width={width - 4} />
+      ) : (
+        <Text color="gray">{compactPathMiddle(basePath, Math.max(18, width - 4))}</Text>
+      )}
     </Box>
   );
 }
 
-function Card({
-  title,
-  subtitle,
-  active,
-  tone = 'cyan',
-  children
+function SummaryBar({
+  compact,
+  scope,
+  preset,
+  categoryCount,
+  availableCategoryCount,
+  selectedCount,
+  visibleTargetCount,
+  reclaimableBytes,
+  durationMs,
+  width
 }: {
-  title: string;
-  subtitle?: string;
-  active: boolean;
-  tone?: Tone;
-  children: React.ReactNode;
+  compact: boolean;
+  scope: Scope;
+  preset: Preset;
+  categoryCount: number;
+  availableCategoryCount: number;
+  selectedCount: number;
+  visibleTargetCount: number;
+  reclaimableBytes: number;
+  durationMs?: number;
+  width: number;
 }) {
-  const borderColor = active ? tone : 'gray';
+  const longSummary = [
+    scope === 'local' ? 'Local' : 'Global',
+    PRESET_META[preset].label,
+    `${categoryCount}/${availableCategoryCount} categories`,
+    `${selectedCount}/${visibleTargetCount} selected`,
+    formatBytes(reclaimableBytes),
+    durationMs === undefined ? null : formatDuration(durationMs)
+  ]
+    .filter(Boolean)
+    .join(' | ');
+
+  if (compact) {
+    return <Text color="gray">{truncate(longSummary, width)}</Text>;
+  }
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={borderColor} paddingX={1} paddingY={0}>
-      <Text color={borderColor}>{title}</Text>
-      {subtitle ? <Text color="gray">{compactPath(subtitle, 64)}</Text> : null}
-      {children}
+    <Box borderStyle="single" borderColor="gray" paddingX={1} marginBottom={1}>
+      <Text>
+        <Text color="gray">Scope </Text>
+        {scope === 'local' ? 'Local' : 'Global'}
+        <Text color="gray"> | Mode </Text>
+        {PRESET_META[preset].label}
+        <Text color="gray"> | Categories </Text>
+        {categoryCount}/{availableCategoryCount}
+        <Text color="gray"> | Selected </Text>
+        {selectedCount}/{visibleTargetCount}
+        <Text color="gray"> | Reclaimable </Text>
+        <Text color={reclaimableBytes > 0 ? 'green' : 'gray'}>{formatBytes(reclaimableBytes)}</Text>
+        {durationMs === undefined ? null : <Text color="gray"> | Scan {formatDuration(durationMs)}</Text>}
+      </Text>
     </Box>
   );
 }
 
-function WorkflowCard({
-  step,
-  title,
-  hint,
-  stateLabel,
+function SectionTabs({
   active,
-  tone,
-  children
+  availableSections,
+  compact
 }: {
-  step: string;
-  title: string;
-  hint: string;
-  stateLabel: string;
-  active: boolean;
-  tone: Tone;
-  children: React.ReactNode;
+  active: SectionId;
+  availableSections: SectionId[];
+  compact: boolean;
 }) {
-  return (
-    <Card title={`Step ${step}`} subtitle={stateLabel} active={active} tone={tone}>
-      <Text color={active ? tone : 'white'}>{title}</Text>
-      <Text color="gray">{compactPath(hint, 76)}</Text>
-      {children}
-    </Card>
-  );
+  const tabs = SECTION_ORDER.map((sectionId, index) => {
+    const available = availableSections.includes(sectionId);
+    const selected = active === sectionId;
+    return `${selected ? '>' : ' '}${index + 1} ${sectionLabel(sectionId)}${available ? '' : '*'}`;
+  }).join(compact ? ' ' : '  ');
+
+  return <Text color="gray">{tabs}</Text>;
 }
 
-function SideCard({
-  title,
-  subtitle,
-  tone,
-  children
-}: {
-  title: string;
-  subtitle?: string;
-  tone: Tone;
-  children: React.ReactNode;
-}) {
-  return (
-    <Card title={title} subtitle={subtitle} active={false} tone={tone}>
-      {children}
-    </Card>
-  );
-}
-
-function SelectableRow({label, selected, cursor, detail}: {label: string; selected: boolean; cursor: boolean; detail?: string}) {
-  const color = cursor ? 'cyan' : selected ? 'green' : 'white';
-
+function SectionHeader({activeSection, hint}: {activeSection: SectionId; hint: string}) {
   return (
     <Box justifyContent="space-between">
-      <Text color={color}>
-        {cursor ? '>' : ' '} {selected ? '[x]' : '[ ]'} {label}
-      </Text>
-      {detail ? <Text color={cursor ? 'cyan' : 'gray'}>{compactPath(detail, 20)}</Text> : null}
+      <Text color="cyan">{sectionLabel(activeSection)}</Text>
+      <Text color="gray">{hint}</Text>
+    </Box>
+  );
+}
+
+function ScopeView({
+  scope,
+  cursor,
+  basePath,
+  maxRows,
+  width
+}: {
+  scope: Scope;
+  cursor: number;
+  basePath: string;
+  maxRows: number;
+  width: number;
+}) {
+  const listRows = Math.max(1, maxRows - 1);
+  const window = getWindow(SCOPE_OPTIONS.length, cursor, listRows);
+
+  return (
+    <Box flexDirection="column">
+      {SCOPE_OPTIONS.slice(window.start, window.end).map((option, index) => (
+        <ChoiceRow
+          key={option.id}
+          cursor={cursor === window.start + index}
+          selected={scope === option.id}
+          title={option.label}
+          detail={option.id === 'local' ? compactPathMiddle(basePath, width - 22) : option.description}
+          width={width}
+        />
+      ))}
+      {maxRows > 1 ? <WindowFooter window={window} total={SCOPE_OPTIONS.length} /> : null}
+    </Box>
+  );
+}
+
+function PresetView({preset, cursor, maxRows, width}: {preset: Preset; cursor: number; maxRows: number; width: number}) {
+  const listRows = Math.max(1, maxRows - 1);
+  const window = getWindow(PRESETS.length, cursor, listRows);
+
+  return (
+    <Box flexDirection="column">
+      {PRESETS.slice(window.start, window.end).map((item, index) => (
+        <ChoiceRow
+          key={item.id}
+          cursor={cursor === window.start + index}
+          selected={preset === item.id}
+          title={PRESET_META[item.id].label}
+          detail={PRESET_META[item.id].description}
+          width={width}
+        />
+      ))}
+      {maxRows > 1 ? <WindowFooter window={window} total={PRESETS.length} /> : null}
+    </Box>
+  );
+}
+
+function CategoryView({
+  availableCategories,
+  enabledCategories,
+  cleanupPlan,
+  cursor,
+  maxRows,
+  focusedCategory,
+  width
+}: {
+  availableCategories: Category[];
+  enabledCategories: Category[];
+  cleanupPlan: ReturnType<typeof buildCleanupPlan> | null;
+  cursor: number;
+  maxRows: number;
+  focusedCategory?: Category;
+  width: number;
+}) {
+  const listRows = Math.max(1, maxRows - 2);
+  const window = getWindow(availableCategories.length, cursor, listRows);
+
+  return (
+    <Box flexDirection="column">
+      {availableCategories.slice(window.start, window.end).map((category, index) => {
+        const actualIndex = window.start + index;
+        return (
+          <DataRow
+            key={category}
+            cursor={cursor === actualIndex}
+            selected={enabledCategories.includes(category)}
+            title={CATEGORY_META[category].label}
+            meta={cleanupPlan ? formatBytes(cleanupPlan.categoryTotals[category] ?? 0) : undefined}
+            width={width}
+          />
+        );
+      })}
+      {maxRows > 1 ? <WindowFooter window={window} total={availableCategories.length} /> : null}
+      {maxRows > 2 ? <Hint text={focusedCategory ? CATEGORY_META[focusedCategory].description : 'Toggle categories before scanning.'} width={width} /> : null}
+    </Box>
+  );
+}
+
+function TargetView({
+  targets,
+  window,
+  cursor,
+  deselectedKeys,
+  scope,
+  basePath,
+  homeDir,
+  noTrash,
+  focusedTarget,
+  width
+}: {
+  targets: ScanCandidate[];
+  window: ListWindow;
+  cursor: number;
+  deselectedKeys: string[];
+  scope: Scope;
+  basePath: string;
+  homeDir: string;
+  noTrash: boolean;
+  focusedTarget?: ScanCandidate;
+  width: number;
+}) {
+  if (targets.length === 0) {
+    return (
+      <Box flexDirection="column">
+        <Text color="gray">No targets found for the current selection.</Text>
+        <Hint text="Change mode or categories, then scan again." width={width} />
+      </Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column">
+      {targets.slice(window.start, window.end).map((target, index) => {
+        const actualIndex = window.start + index;
+        const method = noTrash ? 'permanent' : target.deletionMethod;
+        return (
+          <DataRow
+            key={target.key}
+            cursor={cursor === actualIndex}
+            selected={!deselectedKeys.includes(target.key)}
+            title={formatTargetLabel(target, scope, basePath, homeDir, width)}
+            meta={`${formatBytes(target.size)} ${formatMethod(method)}`}
+            width={width}
+          />
+        );
+      })}
+      {window.size > 1 ? <WindowFooter window={window} total={targets.length} /> : null}
+      {window.size > 2 ? <Hint text={focusedTarget ? focusedTarget.warning : 'Toggle targets you want to keep.'} width={width} /> : null}
+    </Box>
+  );
+}
+
+function ActionView({
+  actions,
+  cursor,
+  confirming,
+  cleanupPlan,
+  dryRun,
+  cleanProgress,
+  executionResult,
+  warnings,
+  maxRows,
+  width
+}: {
+  actions: ActionMeta[];
+  cursor: number;
+  confirming: boolean;
+  cleanupPlan: ReturnType<typeof buildCleanupPlan> | null;
+  dryRun: boolean;
+  cleanProgress: ExecutionProgress | null;
+  executionResult: ExecutionResult | null;
+  warnings: Array<{message: string}>;
+  maxRows: number;
+  width: number;
+}) {
+  const warningLimit = Math.max(0, maxRows - actions.length - (confirming ? 2 : 0) - (executionResult ? 2 : 0) - (cleanProgress ? 1 : 0));
+
+  return (
+    <Box flexDirection="column">
+      {confirming ? <ConfirmBlock cleanupPlan={cleanupPlan} dryRun={dryRun} width={width} /> : null}
+      {cleanProgress ? (
+        <Text color="cyan">
+          Cleaning {cleanProgress.current}/{cleanProgress.total}: {compactPathMiddle(cleanProgress.targetPath, width - 20)}
+        </Text>
+      ) : null}
+      {executionResult ? <ResultBlock result={executionResult} /> : null}
+      {actions.length === 0 ? <Text color="gray">Cleaning in progress.</Text> : null}
+      {actions.map((action, index) => (
+        <ActionRow key={action.id} action={action} cursor={cursor === index} width={width} />
+      ))}
+      {warningLimit > 0 ? (
+        <WarningBlock cleanupWarnings={cleanupPlan?.warnings ?? []} scanWarnings={warnings.map((warning) => warning.message)} limit={warningLimit} width={width} />
+      ) : null}
     </Box>
   );
 }
 
 function ChoiceRow({
-  label,
-  description,
+  cursor,
   selected,
-  cursor
+  title,
+  detail,
+  width
 }: {
-  label: string;
-  description: string;
-  selected: boolean;
   cursor: boolean;
+  selected: boolean;
+  title: string;
+  detail: string;
+  width: number;
 }) {
-  const titleColor = cursor ? 'cyan' : selected ? 'green' : 'white';
+  const color = cursor ? 'cyan' : selected ? 'green' : 'white';
+  const marker = `${cursor ? '>' : ' '} ${selected ? '[x]' : '[ ]'} `;
+  const detailText = detail ? ` ${detail}` : '';
+  const titleWidth = Math.max(8, width - marker.length - detailText.length);
 
-  return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Text color={titleColor}>
-        {cursor ? '>' : ' '} {selected ? '[x]' : '[ ]'} {label}
-      </Text>
-      <Text color="gray">{description}</Text>
-    </Box>
-  );
-}
-
-function ActionRow({action, active}: {action: ActionMeta; active: boolean}) {
-  const color = action.disabled ? 'gray' : active ? 'blue' : 'white';
-
-  return (
-    <Box flexDirection="column">
-      <Text color={color}>
-        {active ? '>' : ' '} [{action.hotkey}] {action.label}
-        {action.disabled ? ' (unavailable)' : ''}
-      </Text>
-      <Text color="gray">{compactPath(action.description, 60)}</Text>
-    </Box>
-  );
-}
-
-function MetricRow({label, value}: {label: string; value: string}) {
   return (
     <Box justifyContent="space-between">
-      <Text color="gray">{label}</Text>
-      <Text>{value}</Text>
+      <Text color={color}>
+        {marker}
+        {truncate(title, titleWidth)}
+      </Text>
+      {detail ? <Text color="gray">{truncate(detail, Math.max(0, width - titleWidth - marker.length))}</Text> : null}
     </Box>
   );
 }
 
-function TimelineRow({step}: {step: WorkflowStep}) {
-  const marker = step.current ? '>' : step.complete ? 'x' : '-';
-  const color = step.current ? 'cyan' : step.complete ? 'green' : 'gray';
+function DataRow({
+  cursor,
+  selected,
+  title,
+  meta,
+  width
+}: {
+  cursor: boolean;
+  selected: boolean;
+  title: string;
+  meta?: string;
+  width: number;
+}) {
+  const color = cursor ? 'cyan' : selected ? 'green' : 'white';
+  const marker = `${cursor ? '>' : ' '} ${selected ? '[x]' : '[ ]'} `;
+  const metaText = meta ? ` ${meta}` : '';
+  const titleWidth = Math.max(8, width - marker.length - metaText.length);
+
+  return (
+    <Box justifyContent="space-between">
+      <Text color={color}>
+        {marker}
+        {truncate(title, titleWidth)}
+      </Text>
+      {meta ? <Text color={cursor ? 'cyan' : 'gray'}>{truncate(meta, Math.max(0, width - titleWidth - marker.length))}</Text> : null}
+    </Box>
+  );
+}
+
+function ActionRow({action, cursor, width}: {action: ActionMeta; cursor: boolean; width: number}) {
+  const color = action.disabled ? 'gray' : cursor ? 'cyan' : 'white';
+  const prefix = `${cursor ? '>' : ' '} [${action.hotkey}] `;
 
   return (
     <Box flexDirection="column">
       <Text color={color}>
-        {marker} {step.step}. {step.title}
+        {prefix}
+        {truncate(`${action.label}${action.disabled ? ' (unavailable)' : ''}`, width - prefix.length)}
       </Text>
-      <Text color="gray">{compactPath(step.summary, 34)}</Text>
+      <Text color="gray">  {truncate(action.description, width - 2)}</Text>
     </Box>
   );
 }
 
-function renderWarningRows(warnings: string[], limit: number) {
-  if (warnings.length === 0) {
-    return <Text color="gray">Warnings will appear here before cleanup.</Text>;
-  }
+function ConfirmBlock({
+  cleanupPlan,
+  dryRun,
+  width
+}: {
+  cleanupPlan: ReturnType<typeof buildCleanupPlan> | null;
+  dryRun: boolean;
+  width: number;
+}) {
+  const summary = `${cleanupPlan?.selected.length ?? 0} targets | ${formatBytes(cleanupPlan?.totalBytes ?? 0)} | Trash ${formatBytes(
+    cleanupPlan?.byMethod.trash ?? 0
+  )} | Permanent ${formatBytes(cleanupPlan?.byMethod.permanent ?? 0)}`;
 
-  const rows = warnings.slice(0, limit).map((warning) => (
-    <Text key={warning} color="yellow">
-      - {compactPath(warning, 70)}
-    </Text>
-  ));
+  return (
+    <Box flexDirection="column">
+      <Text color={dryRun ? 'cyan' : 'yellow'}>{dryRun ? 'Dry run preview' : 'Final confirmation required'}</Text>
+      <Text>{truncate(summary, width)}</Text>
+    </Box>
+  );
+}
 
-  if (warnings.length > limit) {
-    rows.push(
-      <Text key="more" color="yellow">
-        - +{warnings.length - limit} more warnings
+function ResultBlock({result}: {result: ExecutionResult}) {
+  return (
+    <Box flexDirection="column">
+      <Text color="green">Cleanup complete</Text>
+      <Text>
+        Removed {result.deleted.length} targets, reclaimed {formatBytes(result.bytesReclaimed)}.
       </Text>
-    );
-  }
-
-  return rows;
+      {result.skipped.length > 0 ? <Text color="yellow">Skipped {result.skipped.length} targets.</Text> : null}
+    </Box>
+  );
 }
 
-function buildConfirmWarnings(cleanupPlan: ReturnType<typeof buildCleanupPlan> | null): string[] {
-  if (!cleanupPlan) {
-    return [];
+function WarningBlock({
+  cleanupWarnings,
+  scanWarnings,
+  limit,
+  width
+}: {
+  cleanupWarnings: string[];
+  scanWarnings: string[];
+  limit: number;
+  width: number;
+}) {
+  const warnings = [...cleanupWarnings, ...scanWarnings].slice(0, Math.max(0, limit - 1));
+
+  if (warnings.length === 0) {
+    return <Text color="gray">No warnings for the current selection.</Text>;
   }
 
-  return [
-    `Selected targets: ${cleanupPlan.selected.length}`,
-    `Total reclaimable: ${formatBytes(cleanupPlan.totalBytes)}`,
-    `Trash: ${formatBytes(cleanupPlan.byMethod.trash)}`,
-    `Permanent delete: ${formatBytes(cleanupPlan.byMethod.permanent)}`,
-    ...cleanupPlan.warnings
-  ];
+  return (
+    <Box flexDirection="column">
+      <Text color="yellow">Warnings</Text>
+      {warnings.map((warning) => (
+        <Text key={warning} color="yellow">
+          - {truncate(warning, width - 2)}
+        </Text>
+      ))}
+    </Box>
+  );
 }
 
-function formatTargetLabel(target: ScanCandidate, scope: Scope, basePath: string, homeDir: string): string {
+function ProgressLine({current, total, width}: {current: number; total: number; width: number}) {
+  const barWidth = clamp(Math.floor(width / 3), 8, 28);
+
+  return (
+    <Text color="cyan">
+      {renderBar(current, total || 1, barWidth)} {current}/{total}
+    </Text>
+  );
+}
+
+function WindowFooter({window, total}: {window: ListWindow; total: number}) {
+  if (total <= window.size) {
+    return null;
+  }
+
+  return (
+    <Text color="gray">
+      Showing {window.start + 1}-{window.end} of {total}
+    </Text>
+  );
+}
+
+function Hint({text, width}: {text: string; width: number}) {
+  return <Text color="gray">{truncate(text, width)}</Text>;
+}
+
+function Footer({
+  compact,
+  activeSection,
+  canPageTargets,
+  confirming
+}: {
+  compact: boolean;
+  activeSection: SectionId;
+  canPageTargets: boolean;
+  confirming: boolean;
+}) {
+  const baseKeys = compact
+    ? 'Tab/1-5 switch | jk move | Space/Enter choose | s scan | x clean | q quit'
+    : 'Tab or 1-5 switch sections | arrows/jk move | Space/Enter choose | s scan | x clean | q quit';
+  const extras = [activeSection === 'targets' && canPageTargets ? 'n/p page' : null, confirming ? 'b/Esc back' : null]
+    .filter(Boolean)
+    .join(' | ');
+
+  return (
+    <Box marginTop={1}>
+      <Text color="gray">
+        {baseKeys}
+        {extras ? ` | ${extras}` : ''}
+      </Text>
+    </Box>
+  );
+}
+
+function formatTargetLabel(target: ScanCandidate, scope: Scope, basePath: string, homeDir: string, width: number): string {
   const anchor = scope === 'local' ? basePath : homeDir;
   const relativePath = path.relative(anchor, target.path) || path.basename(target.path);
-  return compactPathMiddle(relativePath, 44);
+  return compactPathMiddle(relativePath, Math.max(12, width - 22));
 }
 
-function getWorkflowStage(activeFocus: FocusSection): WorkflowStage {
-  switch (activeFocus) {
+function getSectionHint(section: SectionId, scanResult: ScanResult | null, page: number, totalPages: number): string {
+  switch (section) {
     case 'scope':
+      return 'where to scan';
     case 'preset':
-      return 'setup';
+      return 'what to find';
     case 'categories':
-      return 'categories';
+      return 'fine tune';
     case 'targets':
-      return 'review';
+      return scanResult ? `page ${page}/${totalPages}` : 'scan first';
     case 'actions':
-      return 'cleanup';
+      return 'run or exit';
   }
 }
 
-function getWorkflowSteps({
-  activeStage,
-  scope,
-  preset,
-  enabledCategoryCount,
-  availableCategoryCount,
-  scanResult,
-  selectionCount,
-  visibleTargetCount,
-  confirming,
-  executionResult
-}: {
-  activeStage: WorkflowStage;
-  scope: Scope;
-  preset: Preset;
-  enabledCategoryCount: number;
-  availableCategoryCount: number;
-  scanResult: ScanResult | null;
-  selectionCount: number;
-  visibleTargetCount: number;
-  confirming: boolean;
-  executionResult: ExecutionResult | null;
-}): WorkflowStep[] {
-  return [
-    {
-      stage: 'setup',
-      step: '1',
-      title: 'Setup',
-      summary: `${scope === 'local' ? 'Local' : 'Global'} · ${PRESET_META[preset].label}`,
-      current: activeStage === 'setup',
-      complete: true
-    },
-    {
-      stage: 'categories',
-      step: '2',
-      title: 'Categories',
-      summary: `${enabledCategoryCount}/${availableCategoryCount} enabled`,
-      current: activeStage === 'categories',
-      complete: enabledCategoryCount > 0
-    },
-    {
-      stage: 'review',
-      step: '3',
-      title: 'Review',
-      summary: scanResult ? `${selectionCount}/${visibleTargetCount} selected` : 'Run scan',
-      current: activeStage === 'review',
-      complete: Boolean(scanResult)
-    },
-    {
-      stage: 'cleanup',
-      step: '4',
-      title: 'Cleanup',
-      summary: executionResult ? 'Completed' : confirming ? 'Waiting for confirm' : 'Ready',
-      current: activeStage === 'cleanup',
-      complete: Boolean(executionResult)
-    }
-  ];
-}
-
-function getStatusModel({
+function getStatus({
+  busy,
   scanProgress,
   cleanProgress,
-  busy,
   confirming,
   executionResult,
-  scanResult,
-  cleanupPlan
+  scanResult
 }: {
+  busy: 'scan' | 'clean' | null;
   scanProgress: ScanProgress | null;
   cleanProgress: ExecutionProgress | null;
-  busy: 'scan' | 'clean' | null;
   confirming: boolean;
   executionResult: ExecutionResult | null;
   scanResult: ScanResult | null;
-  cleanupPlan: ReturnType<typeof buildCleanupPlan> | null;
-}): StatusModel {
-  const progress = busy === 'scan' ? scanProgress : cleanProgress;
-  const total = progress?.total ?? 0;
-  const current = progress?.current ?? 0;
-
+}): {text: string; tone: Tone; progress?: {current: number; total: number}} {
   if (busy === 'scan' && scanProgress) {
-    return {
-      label: 'Scanning',
-      detail: scanProgress.message,
-      tone: 'cyan',
-      progressCurrent: current,
-      progressTotal: total
-    };
+    return {text: scanProgress.message, tone: 'cyan', progress: {current: scanProgress.current, total: scanProgress.total}};
   }
 
   if (busy === 'clean' && cleanProgress) {
-    return {
-      label: 'Cleaning',
-      detail: compactPath(cleanProgress.targetPath, 80),
-      tone: 'cyan',
-      progressCurrent: current,
-      progressTotal: total
-    };
+    return {text: cleanProgress.targetPath, tone: 'cyan', progress: {current: cleanProgress.current, total: cleanProgress.total}};
   }
 
   if (confirming) {
-    return {
-      label: 'Awaiting confirmation',
-      detail: `${cleanupPlan?.selected.length ?? 0} targets for ${formatBytes(cleanupPlan?.totalBytes ?? 0)}.`,
-      tone: 'yellow',
-      progressCurrent: 0,
-      progressTotal: 0
-    };
+    return {text: 'confirm cleanup', tone: 'yellow'};
   }
 
   if (executionResult) {
-    return {
-      label: 'Cleanup finished',
-      detail: `Reclaimed ${formatBytes(executionResult.bytesReclaimed)} from ${executionResult.deleted.length} targets.`,
-      tone: 'green',
-      progressCurrent: 0,
-      progressTotal: 0
-    };
+    return {text: `reclaimed ${formatBytes(executionResult.bytesReclaimed)}`, tone: 'green'};
   }
 
   if (scanResult) {
-    return {
-      label: 'Scan complete',
-      detail: `${scanResult.candidates.length} targets across ${scanResult.rootsScanned.length} roots in ${formatDuration(scanResult.durationMs)}.`,
-      tone: 'green',
-      progressCurrent: 0,
-      progressTotal: 0
-    };
+    return {text: `${scanResult.candidates.length} targets in ${formatDuration(scanResult.durationMs)}`, tone: 'green'};
   }
 
+  return {text: 'ready', tone: 'gray'};
+}
+
+function sectionLabel(section: SectionId): string {
+  switch (section) {
+    case 'scope':
+      return 'Scope';
+    case 'preset':
+      return 'Mode';
+    case 'categories':
+      return 'Categories';
+    case 'targets':
+      return 'Review';
+    case 'actions':
+      return 'Actions';
+  }
+}
+
+function resolveSection(requested: SectionId, availableSections: SectionId[]): SectionId {
+  if (availableSections.includes(requested)) {
+    return requested;
+  }
+
+  return 'actions';
+}
+
+function nextSection(current: SectionId, availableSections: SectionId[], direction: 1 | -1): SectionId {
+  const currentIndex = Math.max(0, availableSections.indexOf(current));
+  const nextIndex = (currentIndex + direction + availableSections.length) % availableSections.length;
+  return availableSections[nextIndex] ?? current;
+}
+
+interface ListWindow {
+  start: number;
+  end: number;
+  size: number;
+}
+
+function getWindow(total: number, cursor: number, size: number): ListWindow {
+  const safeSize = Math.max(1, size);
+  if (total <= safeSize) {
+    return {start: 0, end: total, size: safeSize};
+  }
+
+  const pageStart = Math.floor(cursor / safeSize) * safeSize;
+  return {start: pageStart, end: Math.min(total, pageStart + safeSize), size: safeSize};
+}
+
+function getTerminalModel(width: number, height: number) {
+  const safeWidth = Math.max(24, width || 80);
+  const safeHeight = Math.max(8, height || 24);
+  const compact = safeWidth < 72 || safeHeight < 20;
+  const paddingX = safeWidth > 38 ? 1 : 0;
+  const reservedRows = compact ? 7 : 11;
+
   return {
-    label: 'Ready',
-    detail: 'Choose setup, then run a scan.',
-    tone: 'gray',
-    progressCurrent: 0,
-    progressTotal: 0
+    width: safeWidth,
+    height: safeHeight,
+    compact,
+    paddingX,
+    contentWidth: Math.max(20, safeWidth - paddingX * 2 - (compact ? 0 : 4)),
+    bodyRows: Math.max(1, safeHeight - reservedRows)
   };
 }
 
-function getFocusHelp({
-  activeFocus,
-  page,
-  totalPages,
-  selectionCount,
-  targetCount
-}: {
-  activeFocus: FocusSection;
-  page: number;
-  totalPages: number;
-  selectionCount: number;
-  targetCount: number;
-}) {
-  switch (activeFocus) {
-    case 'scope':
-      return 'Move to a scope option, then press Enter to apply it.';
-    case 'preset':
-      return 'Preview presets with the cursor, then press Enter to apply one.';
-    case 'categories':
-      return 'Enable or disable categories before scanning.';
-    case 'targets':
-      return `${selectionCount} selected across ${targetCount} targets. Page ${page}/${totalPages}.`;
-    case 'actions':
-      return 'Global action keys work without moving focus here.';
+function truncate(value: string, maxLength: number): string {
+  const safeMax = Math.max(0, maxLength);
+  if (value.length <= safeMax) {
+    return value;
   }
+
+  if (safeMax <= 3) {
+    return value.slice(0, safeMax);
+  }
+
+  return `${value.slice(0, safeMax - 3)}...`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) {
+    return min;
+  }
+
+  return Math.max(min, Math.min(max, value));
 }
 
 function useTerminalSize(): [number, number] {
